@@ -5,7 +5,8 @@ import time
 import csv
 import random
 import datetime
-from cryptography.fernet import Fernet
+from typing import Optional, Callable
+from cryptography.fernet import Fernet, InvalidToken
 
 COMPANIES = [
         'Alpha SARL', 'Beta SA', 'Gamma & Co', 'Delta Services', 'Epsilon Industries',
@@ -15,10 +16,12 @@ EMPLOYEES = [
         'Alice Dupont', 'Bob Martin', 'Claire Leroy', 'David Moreau', 'Emma Petit',
         'Franck Dubois', 'Gilles Marchal', 'Hélène Laurent'
     ]
-CATEGORIES = ['Fournitures', 'Repas', 'Transport', 'Hébergement', 'Matériel', 'Services']
+CATEGORIES = [
+    'Fournitures', 'Repas', 'Transport', 'Hébergement', 'Matériel', 'Services'
+    ]
 
 
-def copy_folder(src: str, dst: str):
+def copy_folder(src: str, dst: str) -> None:
     """Copie un dossier et son contenu"""
     if not os.path.exists(dst):
         os.makedirs(dst)
@@ -34,7 +37,7 @@ def copy_folder(src: str, dst: str):
                 f_dst.write(data)
 
 
-def random_date(start_year: int =2023, end_year: int =2026):
+def random_date(start_year: int =2023, end_year: int =2026) -> str:
     """
     Génère une date aléatoire entre le 1er janvier de start_year
     et le 31 décembre de end_year.
@@ -51,7 +54,7 @@ def generate_demo_files(
         bank_tx: int = 200,
         expenses: int = 100,
         payroll: int = 50
-        ):
+        ) -> None:
     """Génère des fichiers CSV de démonstration ressemblant à des fichiers comptables.
 
     Crée les fichiers: invoices.csv, bank_statement.csv, expenses.csv, payroll.csv
@@ -142,11 +145,11 @@ def generate_demo_files(
     print(f"Fichiers générés dans '{target_dir}'.")
 
 
-def demo_ransomware(target_dir: str):
+def demo_ransomware(target_dir: str) -> None:
     """Démonstration de chiffrement d'un ensemble de fichiers"""
     # 1. Génération de la clé de chiffrement
     key = Fernet.generate_key()
-    cipher = Fernet(key)
+    _ = Fernet(key)
 
     # 1bis. Confirmation de l'utilisateur avant de procéder au chiffrement
     print(f"Vous êtes sur le point de chiffrer tous les fichiers du dossier '{target_dir}'.")
@@ -158,47 +161,134 @@ def demo_ransomware(target_dir: str):
         print("--- FIN DU SCRIPT ---")
         return
 
-    if not os.path.exists(target_dir):
-        print(f"Créez d'abord le dossier '{target_dir}' et ajoutez-y des fichiers à chiffrer.")
-        return
+    # Utiliser la fonction de bas niveau pour effectuer le chiffrement
+    key = encrypt_folder(target_dir)
+    if key is None:
+        print("Aucune clé générée (peut-être utilisé un chiffrement fourni).")
+    else:
+        print(f"--- Clé de chiffrement (gardez-la précieusement) : {key.decode()} ---")
+        print("--- Essayez d'ouvrir maintenant les fichiers chiffrés pour voir le résultat ---")
 
-    files = [f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))]
 
-    if not files:
-        print(f"Aucun fichier trouvé dans le dossier '{target_dir}'. Ajoutez des fichiers.")
-        return
-
-    # 2bis. Copie du dossier pour éviter de chiffrer les fichiers originaux
-    backup_dir = target_dir + "_backup"
+def _create_backup_if_needed(target_dir: str) -> None:
+    """Create a backup folder for target_dir."""
+    src_abs = os.path.abspath(target_dir)
+    normalized = src_abs.rstrip(os.sep)
+    backup_dir = normalized + "_backup"
+    try:
+        if os.path.commonpath([backup_dir, src_abs]) == src_abs:
+            parent = os.path.dirname(normalized)
+            base = os.path.basename(normalized)
+            backup_dir = os.path.join(parent, base + "_backup")
+    except ValueError:
+        pass
     if os.path.exists(backup_dir):
-        print(f"Le dossier de sauvegarde '{backup_dir}' existe déjà. Supprimez-le avant...")
-        return
-    copy_folder(target_dir, backup_dir)
-    print(f"Les fichiers originaux ont été copiés dans '{backup_dir}'.")
+        print(f"Le dossier de sauvegarde '{backup_dir}' existe déjà. La création est ignorée.")
+    else:
+        copy_folder(target_dir, backup_dir)
 
-    print("--- DEBUT D'OPERATION DE CHIFFREMENT ---")
-    print(f"--- Début de chiffrement de {len(files)} fichiers dans '{target_dir}'... ---")
-    start_time = time.perf_counter()
 
-    # 3. Chiffrement des fichiers
+def _encrypt_files(
+        target_dir: str,
+        files: list[str],
+        cipher: Fernet,
+        on_file_encrypted: Optional[Callable[[str], None]]
+    ) -> None:
+    """Encrypt all files in the list using the provided cipher."""
     for filename in files:
         file_path = os.path.join(target_dir, filename)
         with open(file_path, 'rb') as f:
             data = f.read()
-
         encrypted_data = cipher.encrypt(data)
-
         with open(file_path, 'wb') as f:
             f.write(encrypted_data)
+        if on_file_encrypted:
+            try:
+                on_file_encrypted(filename)
+            except TypeError:
+                pass
 
-        print(f"Fichier '{filename}' chiffré.")
 
-    end_time = time.perf_counter()
-    duration = end_time - start_time
-    print("--- OPERATION DE CHIFFREMENT TERMINÉE ---")
-    print(f"--- Chiffrement terminé en {duration:.2f} secondes ---")
-    print(f"--- Clé de chiffrement (gardez-la précieusement) : {key.decode()} ---")
-    print("--- Essayez d'ouvrir maintenant les fichiers chiffrés pour voir le résultat ---")
+def encrypt_folder(
+        target_dir: str,
+        on_file_encrypted: Optional[Callable[[str], None]] = None,
+        create_backup: bool = True,
+        cipher: Optional[Fernet] = None) -> None | bytes:
+    """
+    Encrypt all files in `target_dir` and optionally call
+    `on_file_encrypted(filename)` after each file.
+
+    If `cipher` is None, a new Fernet key is generated and returned (bytes).
+    If `cipher` is provided, the function returns None.
+    """
+    # validation
+    if not os.path.exists(target_dir):
+        raise FileNotFoundError(target_dir)
+
+    files = [f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))]
+    if not files:
+        return None
+
+    # prepare cipher/key
+    generated_key = None
+    if cipher is None:
+        generated_key = Fernet.generate_key()
+        cipher = Fernet(generated_key)
+
+    # backup
+    if create_backup:
+        _create_backup_if_needed(target_dir)
+
+    # encrypt files (synchronous)
+    _encrypt_files(target_dir, files, cipher, on_file_encrypted)
+
+    # small sleep to make UI progress readable
+    time.sleep(0.02)
+
+    return generated_key
+
+
+def decrypt_folder(
+        target_dir: str,
+        key: Optional[bytes | str],
+        on_file_decrypted: Optional[Callable[[str], None]] = None
+        ) -> None:
+    """Decrypt all files in `target_dir` using the provided `key`.
+
+    `key` may be bytes or a str. Calls `on_file_decrypted(filename)` after each file.
+    Raises FileNotFoundError if target missing, InvalidToken on decryption errors.
+    """
+    if not os.path.exists(target_dir):
+        raise FileNotFoundError(target_dir)
+
+    files = [f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))]
+    if not files:
+        return
+
+    if isinstance(key, str):
+        key_bytes = key.encode()
+    else:
+        key_bytes = key
+
+    cipher = Fernet(key_bytes)  # type: ignore
+
+    for filename in files:
+        file_path = os.path.join(target_dir, filename)
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        try:
+            decrypted = cipher.decrypt(data)
+        except InvalidToken as e:
+            raise InvalidToken('Clé invalide ou fichier corrompu') from e
+        with open(file_path, 'wb') as f:
+            f.write(decrypted)
+        if on_file_decrypted:
+            try:
+                on_file_decrypted(filename)
+            except (TypeError, AttributeError):
+                pass
+        time.sleep(0.02)
+
 
 
 if __name__ == "__main__":
